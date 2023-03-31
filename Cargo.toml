@@ -19,6 +19,7 @@ rusty-money = "0.4.1"
 chrono = { version = "0.4.19", features = ["serde"] }
 clap = "2.33.3"
 prettytable-rs = "0.10"
+rust_decimal = "1.29.1"
 
 [dev-dependencies]
 assert_cmd = "2.0.0"

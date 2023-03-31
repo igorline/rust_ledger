@@ -1,7 +1,10 @@
 use chrono::NaiveDate;
 use prettytable::{format, Table};
+use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
 use rusty_money::{iso, Money};
 use serde::{de, Deserialize, Deserializer, Serialize};
+use serde_yaml::Value;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::str::FromStr;
@@ -18,9 +21,29 @@ pub struct LedgerFile {
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub account: String,
-    pub amount: f64,
-    pub budget_month: Option<f64>,
-    pub budget_year: Option<f64>,
+    #[serde(deserialize_with = "deserialize_decimal")]
+    pub amount: Decimal,
+    pub budget_month: Option<Decimal>,
+    pub budget_year: Option<Decimal>,
+}
+
+fn deserialize_decimal<'de, D>(deserializer: D) -> Result<Decimal, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Value = Deserialize::deserialize(deserializer)?;
+    match value {
+        Value::String(s) => {
+            println!("{}", self.currency.as_ref());
+            let f = Decimal::from_str(s.replace(",", ".").as_str()).map_err(de::Error::custom)?;
+            Ok(f)
+        }
+        Value::Number(n) => {
+            let f = Decimal::from_f64(n.as_f64().unwrap()).unwrap();
+            Ok(f)
+        }
+        _ => Err(de::Error::custom("expected a string or number")),
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -28,10 +51,65 @@ pub struct Transaction {
     #[serde(deserialize_with = "deserialize_date_from_str")]
     pub date: NaiveDate,
     pub account: Option<String>,
-    pub amount: Option<f64>,
+    // #[serde(skip_serializing_if = "deserialize_option_decimal", default)]
+    #[serde(default, deserialize_with = "deserialize_option_decimal")]
+    pub amount: Option<Decimal>,
     pub description: String,
     pub offset_account: Option<String>,
     pub transactions: Option<Vec<TransactionList>>,
+}
+
+fn deserialize_option_decimal<'de, D>(deserializer: D) -> Result<Option<Decimal>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Value = Deserialize::deserialize(deserializer)?;
+
+    println!("value == {:?}", value);
+
+    match value {
+        Value::String(s) => {
+            let f = Decimal::from_str(s.replace(",", ".").as_str()).map_err(de::Error::custom)?;
+            Ok(Some(f))
+        }
+        Value::Number(n) => {
+            let f = Decimal::from_f64(n.as_f64().unwrap()).unwrap();
+            Ok(Some(f))
+        }
+        Value::Null => Ok(None),
+        _ => Err(de::Error::custom("expected a string or number")),
+    }
+
+    // struct StrVisitor;
+
+    // impl<'de> de::Visitor<'de> for StrVisitor {
+    // type Value = Option<f64>;
+
+    // fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+    // formatter.write_str("a string")
+    // }
+
+    // fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    // where
+    // E: de::Error,
+    // {
+    // println!("value == {:?}", value);
+    // Ok(Some(10.))
+    // // value == ""
+    // // .parse::<f64>()
+    // // .map(|f| None)
+    // // .map_err(de::Error::custom)
+    // // .or_else(|_|
+    // // f64::from_str(value.replace(",", ".").as_str())
+    // // .map(|f| Some(f))
+    // // .map_err(de::Error::custom)
+    // }
+    // }
+
+    // Ok(Option::from(Decimal::from_f64(10.).unwrap()))
+    // Option::<f64>::deserialize(deserializer)
+
+    // deserializer.deserialize_option(StrVisitor)
 }
 
 /// chrono::NaiveDate implements std::str::FromStr, so this is a generic
@@ -49,7 +127,8 @@ where
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct TransactionList {
     pub account: String,
-    pub amount: f64,
+    #[serde(deserialize_with = "deserialize_decimal")]
+    pub amount: Decimal,
 }
 
 /// enumerates all possible `group` values for pattern matching
@@ -67,7 +146,7 @@ pub enum Group {
 struct OptionalKeys {
     account: String,
     offset_account: String,
-    amount: f64,
+    amount: Decimal,
     transactions: Vec<TransactionList>,
 }
 
@@ -83,12 +162,14 @@ impl OptionalKeys {
             Some(name) => name.to_string(),
         };
 
-        let amount = transaction.amount.unwrap_or(0.00);
+        let amount = transaction.amount.unwrap_or(Decimal::ZERO);
 
         let transactions = match transaction.transactions.clone() {
             None => vec![],
             Some(list) => list,
         };
+
+        println!("transactions == {:?}", transactions);
 
         Self {
             account,
@@ -106,7 +187,7 @@ impl OptionalKeys {
 /// e.g. Key: "2020-01-01" -> <Key: "expense:general", Value: 100.00>
 #[derive(Debug, PartialEq)]
 struct GroupMap {
-    group_map: HashMap<String, HashMap<String, f64>>,
+    group_map: HashMap<String, HashMap<String, Decimal>>,
 }
 
 impl GroupMap {
@@ -120,13 +201,13 @@ impl GroupMap {
         &mut self,
         date_string: String,
         account: String,
-        amount: f64,
+        amount: Decimal,
         transactions: Vec<TransactionList>,
     ) {
-        if amount != 0.00 && !account.is_empty() {
+        if !amount.is_zero() && !account.is_empty() {
             let account_ref = self.group_map.get_mut(&date_string);
             if let Some(r) = account_ref {
-                *r.entry(account).or_insert(0.00) += amount;
+                *r.entry(account).or_insert(Decimal::from(0)) += amount;
             } else {
                 let mut account_map = HashMap::new();
                 account_map.insert(account, amount);
@@ -136,7 +217,7 @@ impl GroupMap {
             for t in transactions {
                 let account_ref = self.group_map.get_mut(&date_string);
                 if let Some(r) = account_ref {
-                    *r.entry(t.account).or_insert(0.00) += amount;
+                    *r.entry(t.account).or_insert(Decimal::ZERO) += amount;
                 } else {
                     let mut account_map = HashMap::new();
                     account_map.insert(t.account, t.amount);
@@ -192,7 +273,7 @@ impl LedgerFile {
                     flattened_transactions.push(Transaction {
                         account: t.offset_account,
                         offset_account: None,
-                        amount: Some(amount * -1.00),
+                        amount: Some(amount * Decimal::from(-1)),
                         ..t
                     });
                 }
@@ -306,7 +387,7 @@ impl LedgerFile {
         }
 
         // create output
-        let mut check_figure: f64 = 0.0;
+        let mut check_figure: Decimal = Decimal::from(0);
         let mut current_account_type = String::new();
 
         for account in accounts_vec {
@@ -318,8 +399,9 @@ impl LedgerFile {
                 table.add_row(row![current_account_type]);
             }
 
-            table
-                .add_row(row![r->account.account, Money::from_str(&account.amount.to_string(), currency_code).unwrap()]);
+            table.add_row(
+                row![r->account.account, Money::from_decimal(account.amount, currency_code)],
+            );
         }
 
         table.add_empty_row();
@@ -430,7 +512,7 @@ impl LedgerFile {
             for (account, amount) in account_map.iter() {
                 let b = &Account {
                     account: "".to_string(),
-                    amount: 0.0,
+                    amount: Decimal::from(0),
                     budget_month: None,
                     budget_year: None,
                 };
@@ -446,7 +528,7 @@ impl LedgerFile {
                     Group::None => None,
                 };
 
-                let budget_amount = budget.unwrap_or(0.00);
+                let budget_amount = budget.unwrap_or(Decimal::ZERO);
                 let delta = budget_amount - amount;
 
                 table.add_row(row![
