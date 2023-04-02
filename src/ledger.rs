@@ -2,7 +2,10 @@ use chrono::NaiveDate;
 use prettytable::{format, Table};
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
-use rusty_money::{iso, Money};
+use rusty_money::{
+    iso::{self, Currency},
+    Money,
+};
 use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_yaml::Value;
 use std::collections::HashMap;
@@ -11,9 +14,10 @@ use std::str::FromStr;
 
 /// root data structure that contains the deserialized `LedgerFile` data
 /// and associated structs
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Deserialize)]
 pub struct LedgerFile {
-    pub currency: String,
+    #[serde(deserialize_with = "deserialize_currency")]
+    pub currency: &'static Currency,
     pub accounts: Vec<Account>,
     pub transactions: Vec<Transaction>,
 }
@@ -27,6 +31,15 @@ pub struct Account {
     pub budget_year: Option<Decimal>,
 }
 
+fn deserialize_currency<'de, D>(deserializer: D) -> Result<&'static Currency, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let currency_code: String = Deserialize::deserialize(deserializer)?;
+
+    iso::find(&currency_code).ok_or_else(|| serde::de::Error::custom("Invalid currency code"))
+}
+
 fn deserialize_decimal<'de, D>(deserializer: D) -> Result<Decimal, D::Error>
 where
     D: Deserializer<'de>,
@@ -34,7 +47,7 @@ where
     let value: Value = Deserialize::deserialize(deserializer)?;
     match value {
         Value::String(s) => {
-            println!("{}", self.currency.as_ref());
+            // println!("{}", self.currency.as_ref());
             let f = Decimal::from_str(s.replace(",", ".").as_str()).map_err(de::Error::custom)?;
             Ok(f)
         }
@@ -229,16 +242,6 @@ impl GroupMap {
 }
 
 impl LedgerFile {
-    /// obtain ISO 4217 currency for reference
-    fn get_currency(&self) -> &'static rusty_money::iso::Currency {
-        let c = &self.currency;
-
-        match iso::find(c) {
-            Some(n) => n,
-            None => rusty_money::iso::USD,
-        }
-    }
-
     /// flatten abbreviated and detailed `LedgerFile` transactions into
     /// a Vec containing individual detailed transactions.
     /// all downstream logic expects this data structure.
@@ -346,7 +349,7 @@ impl LedgerFile {
         table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
         table.set_titles(row!["Account", "Balance"]);
 
-        let currency_code = self.get_currency();
+        let currency_code = self.currency;
         let mut accounts_vec: Vec<Account> = Vec::new();
         let mut transactions_vec: Vec<Account> = Vec::new();
 
@@ -414,7 +417,7 @@ impl LedgerFile {
         table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
         table.set_titles(row!["Date / Account", "Total"]);
 
-        let currency_code = self.get_currency();
+        let currency_code = self.currency;
         let mut group_map = GroupMap::new();
         let filtered_transactions = LedgerFile::filter_transactions_by_option(self, option);
 
@@ -457,7 +460,7 @@ impl LedgerFile {
         table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
         table.set_titles(row!["Date", "Description", "Account", "Amount"]);
 
-        let currency_code = self.get_currency();
+        let currency_code = self.currency;
         let filtered_transactions = LedgerFile::filter_transactions_by_option(self, option);
 
         for t in filtered_transactions {
@@ -480,7 +483,7 @@ impl LedgerFile {
         table.set_format(*format::consts::FORMAT_NO_BORDER_LINE_SEPARATOR);
         table.set_titles(row!["Date / Account", "Budget", "Actual", "Delta"]);
 
-        let currency_code = self.get_currency();
+        let currency_code = self.currency;
         let mut group_map = GroupMap::new();
         let filtered_transactions =
             LedgerFile::filter_income_expense_transactions(self.clone(), option, &group);
@@ -551,29 +554,29 @@ fn get_file() -> LedgerFile {
     };
 
     LedgerFile {
-        currency: "USD".to_string(),
+        currency: iso::USD,
         accounts: vec![
             Account {
                 account: "asset:cash".to_string(),
-                amount: 100.00,
+                amount: Decimal::from_str("100.00").unwrap(),
                 budget_month: None,
                 budget_year: None,
             },
             Account {
                 account: "expense:foo".to_string(),
-                amount: 0.00,
+                amount: Decimal::from_str("0.00").unwrap(),
                 budget_month: None,
                 budget_year: None,
             },
             Account {
                 account: "expense:bar".to_string(),
-                amount: 0.00,
+                amount: Decimal::from_str("0.00").unwrap(),
                 budget_month: None,
                 budget_year: None,
             },
             Account {
                 account: "expense:baz".to_string(),
-                amount: 0.00,
+                amount: Decimal::from_str("0.00").unwrap(),
                 budget_month: None,
                 budget_year: None,
             },
@@ -582,7 +585,7 @@ fn get_file() -> LedgerFile {
             Transaction {
                 date,
                 account: Some("asset:cash".to_string()),
-                amount: Some(10.00),
+                amount: Some(Decimal::from_str("10.00").unwrap()),
                 description: "summary_transaction".to_string(),
                 offset_account: Some("expense:foo".to_string()),
                 transactions: None,
@@ -590,7 +593,7 @@ fn get_file() -> LedgerFile {
             Transaction {
                 date,
                 account: Some("asset:cash".to_string()),
-                amount: Some(-42.00),
+                amount: Some(Decimal::from_str("-42.00").unwrap()),
                 description: "summary_transaction".to_string(),
                 offset_account: Some("expense:foo".to_string()),
                 transactions: None,
@@ -604,15 +607,15 @@ fn get_file() -> LedgerFile {
                 transactions: Some(vec![
                     TransactionList {
                         account: "asset:cash".to_string(),
-                        amount: -50.00,
+                        amount: Decimal::from_str("-50.00").unwrap(),
                     },
                     TransactionList {
                         account: "expense:bar".to_string(),
-                        amount: 20.00,
+                        amount: Decimal::from_str("20.00").unwrap(),
                     },
                     TransactionList {
                         account: "expense:baz".to_string(),
-                        amount: 30.00,
+                        amount: Decimal::from_str("30.00").unwrap(),
                     },
                 ]),
             },
@@ -637,7 +640,7 @@ fn optional_keys() {
         result,
         OptionalKeys {
             account: "asset:cash".to_string(),
-            amount: 10.00,
+            amount: Decimal::from_str("10.00").unwrap(),
             offset_account: "expense:foo".to_string(),
             transactions: vec![],
         }
@@ -659,7 +662,7 @@ fn filter_transactions_by_option_42() {
             Transaction {
                 date,
                 account: Some("asset:cash".to_string()),
-                amount: Some(-42.00),
+                amount: Some(Decimal::from_str("-42.00").unwrap()),
                 description: "summary_transaction".to_string(),
                 offset_account: None,
                 transactions: None,
@@ -667,7 +670,7 @@ fn filter_transactions_by_option_42() {
             Transaction {
                 date,
                 account: Some("expense:foo".to_string()),
-                amount: Some(42.00),
+                amount: Some(Decimal::from_str("42.00").unwrap()),
                 description: "summary_transaction".to_string(),
                 offset_account: None,
                 transactions: None,
@@ -700,7 +703,7 @@ fn group_map() {
             .get("2020-01-01")
             .unwrap()
             .get("expense:foo"),
-        Some(&42.00)
+        Some(&Decimal::from_str("42.00").unwrap())
     );
     assert_eq!(
         group_map
@@ -708,7 +711,7 @@ fn group_map() {
             .get("2020-01-01")
             .unwrap()
             .get("asset:cash"),
-        Some(&-42.00)
+        Some(&Decimal::from_str("-42.00").unwrap())
     );
     assert_eq!(group_map.group_map.keys().count(), 1);
     assert_eq!(
